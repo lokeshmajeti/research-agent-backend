@@ -4,16 +4,23 @@ import arxiv    # Paper search
 from google import genai
 from google.genai import types
 from fastapi.middleware.cors import CORSMiddleware
+import json # <-- Added to parse the AI text into JSON
+
 app = FastAPI(title="AI Research Gap Analysis Backend")
-# Enable CORS for your frontend teammates
+
+# 1. FIXED CORS: Explicit origins replace the wildcard to prevent fatal server crashes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all frontend origins for hackathon ease
+    allow_origins=[
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "https://research-agent-frontend-gold.vercel.app" # Your live frontend
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Initialize the Gemini client (reads from $env:GEMINI_API_KEY)
+
 client = genai.Client()
 
 @app.get("/")
@@ -22,17 +29,9 @@ def home():
 
 @app.post("/api/analyze")
 async def analyze_research(
-    file: UploadFile = File(None),  # Optional uploaded PDF
-    research_question: str = Form(...)  # Research topic or question
+    file: UploadFile = File(None),  
+    research_question: str = Form(...)  
 ):
-    """
-    Backend Endpoint for Frontend Teammates:
-    1. Extracts text from an uploaded research PDF (if provided).
-    2. Fetches relevant papers from arXiv based on the research question.
-    3. Passes everything to Gemini to generate the comparison matrix and research gaps.
-    """
-    
-    # Step 1: Extract text from uploaded PDF (if any)
     pdf_text = ""
     if file is not None:
         pdf_bytes = await file.read()
@@ -40,7 +39,7 @@ async def analyze_research(
         for page in doc:
             pdf_text += page.get_text()
 
-    # Step 2: Fetch related papers from arXiv automatically
+    # NOTE: If arxiv library throws an error here, use: client = arxiv.Client(); search_results = client.results(search)
     search = arxiv.Search(
         query=research_question,
         max_results=3,
@@ -50,35 +49,37 @@ async def analyze_research(
     arxiv_papers = []
     papers_context = ""
     for i, result in enumerate(search.results()):
+        # 2. FIXED NAMING: Keys now match exactly what frontend JS looks for
         paper_info = {
             "title": result.title,
             "authors": [author.name for author in result.authors],
-            "year": result.published.year,
+            "published": str(result.published), 
             "summary": result.summary,
-            "link": result.pdf_url
+            "url": result.pdf_url 
         }
         arxiv_papers.append(paper_info)
         papers_context += f"\nPaper {i+1}:\nTitle: {result.title}\nAbstract: {result.summary}\n"
 
-    # Step 3: Construct the Prompt forcing structured JSON output
+    # 3. FIXED PROMPT: Enforced strict JSON schema matching the JS mapping
     prompt = f"""
     You are an expert AI Research Assistant. Analyze the following research question and context.
     
     Research Question: {research_question}
+    Uploaded Paper Text Excerpt: {pdf_text[:3000] if pdf_text else "None"}
+    Related arXiv Papers Found: {papers_context}
     
-    Uploaded Paper Text Excerpt:
-    {pdf_text[:3000] if pdf_text else "No specific PDF uploaded, rely on general domain knowledge and arXiv results."}
-    
-    Related arXiv Papers Found:
-    {papers_context}
-    
-    Provide a detailed analysis in valid JSON format with the following keys:
-    1. "comparison": A list of objects containing fields: "paper_title", "methodology", "dataset", "key_result", "limitation".
-    2. "potential_gaps": A list of objects containing fields: "gap_description", "supporting_evidence", "related_limitation", "explanation".
-    3. "suggested_approach": An object containing fields: "proposed_solution", "suggested_methodology", "possible_dataset", "possible_technologies".
+    Provide a detailed analysis in valid JSON format exactly matching these keys:
+    {{
+      "comparison": [
+        {{"paper": "Title", "methodology": "Method", "dataset": "Data", "key_result": "Result", "limitation": "Issue"}}
+      ],
+      "potential_gaps": [
+        {{"title": "Short Gap Name", "description": "Detailed explanation"}}
+      ],
+      "suggested_approach": {{"summary": "Solution direction", "methodology": "Tech Stack details"}}
+    }}
     """
 
-    # Step 4: Call Gemini Model
     try:
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -88,14 +89,18 @@ async def analyze_research(
                 temperature=0.3
             ),
         )
-        ai_analysis = response.text
+        # Parse the string text into an actual Python dictionary
+        ai_analysis_dict = json.loads(response.text)
     except Exception as e:
-        ai_analysis = f"Error generating AI analysis: {str(e)}"
+        print(f"Gemini error: {e}")
+        ai_analysis_dict = {}
 
-    # Step 5: Return comprehensive JSON for your frontend team
+    # 4. FIXED RESPONSE: Sent the exact variables expected by the frontend tab panels
     return {
         "status": "success",
         "research_question": research_question,
-        "relevant_papers": arxiv_papers,
-        "ai_analysis": ai_analysis
+        "papers": arxiv_papers, 
+        "matrix": ai_analysis_dict.get("comparison", []),
+        "gaps": ai_analysis_dict.get("potential_gaps", []),
+        "approach": ai_analysis_dict.get("suggested_approach", {})
     }
