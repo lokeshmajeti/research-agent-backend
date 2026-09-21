@@ -7,6 +7,7 @@ from google.genai import types
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 import json
+from typing import Optional
 
 app = FastAPI(title="AI Research Gap Analysis Backend")
 
@@ -28,8 +29,8 @@ def home():
 
 @app.post("/api/analyze")
 async def analyze_research(
-    file: UploadFile = File(None),  
-    research_question: str = Form(...)  
+    research_question: str = Form(...),
+    file: Optional[UploadFile] = File(None)
 ):
     try:
         # 1. Verify API Key
